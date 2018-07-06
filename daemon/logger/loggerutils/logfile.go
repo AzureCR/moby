@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -641,6 +642,15 @@ func followLogs(f *os.File, logWatcher *logger.LogWatcher, notifyRotate chan int
 }
 
 func watchFile(name string) (filenotify.FileWatcher, error) {
+
+	// FileWatcher on Windows file based on the syscall notifications has an issue becuase of file caching.
+	// It is based on ReadDirectoryChangesW() which doesn't detect writes to cache. It detects writes to disk only.
+	// Becuase of lazy writing by the OS, we don't get notifications for file writes and hence the watcher
+	// doesn't work. Hence for Windows we will use poll based notifier.
+	if runtime.GOOS == "windows" {
+		return watchFileForWindows(name)
+	}
+
 	fileWatcher, err := filenotify.New()
 	if err != nil {
 		return nil, err
@@ -662,5 +672,22 @@ func watchFile(name string) (filenotify.FileWatcher, error) {
 			return nil, err
 		}
 	}
+	return fileWatcher, nil
+}
+
+func watchFileForWindows(name string) (filenotify.FileWatcher, error) {
+	fileWatcher := filenotify.NewPollingWatcher()
+
+	logger := logrus.WithFields(logrus.Fields{
+		"module": "logger",
+		"fille":  name,
+	})
+
+	if err := fileWatcher.Add(name); err != nil {
+		fileWatcher.Close()
+		logger.WithError(err).Debugf("error watching log file for modifications")
+		return nil, err
+	}
+
 	return fileWatcher, nil
 }
